@@ -163,12 +163,14 @@ export default function Home() {
             fontFamily: 'monospace'
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.transform = 'translateY(-4px)';
-            e.currentTarget.style.boxShadow = '0 12px 0 #1B5E20, 0 16px 24px rgba(0,0,0,0.4)';
+            const target = e.currentTarget as HTMLDivElement;
+            target.style.transform = 'translateY(-4px)';
+            target.style.boxShadow = '0 12px 0 #1B5E20, 0 16px 24px rgba(0,0,0,0.4)';
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.transform = 'translateY(0)';
-            e.currentTarget.style.boxShadow = '0 8px 0 #1B5E20, 0 12px 20px rgba(0,0,0,0.3)';
+            const target = e.currentTarget as HTMLDivElement;
+            target.style.transform = 'translateY(0)';
+            target.style.boxShadow = '0 8px 0 #1B5E20, 0 12px 20px rgba(0,0,0,0.3)';
           }}
           onClick={handleCreateRoom}
           >
@@ -283,10 +285,12 @@ export default function Home() {
               }}
               onClick={handleJoinRoom}
               onMouseEnter={(e) => {
-                e.currentTarget.style.background = '#FF9800';
+                const target = e.currentTarget as HTMLDivElement;
+                target.style.background = '#FF9800';
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = '#F57C00';
+                const target = e.currentTarget as HTMLDivElement;
+                target.style.background = '#F57C00';
               }}
             >
               JOIN
@@ -486,14 +490,16 @@ export default function Home() {
                 border: '2px solid #1B5E20'
               }}
               onMouseEnter={(e) => {
-                e.target.style.background = '#1B5E20';
-                e.target.style.transform = 'translateY(-2px)';
-                e.target.style.boxShadow = '0 4px 8px rgba(0,0,0,0.3)';
+                const target = e.target as HTMLDivElement;
+                target.style.background = '#1B5E20';
+                target.style.transform = 'translateY(-2px)';
+                target.style.boxShadow = '0 4px 8px rgba(0,0,0,0.3)';
               }}
               onMouseLeave={(e) => {
-                e.target.style.background = '#2E7D32';
-                e.target.style.transform = 'translateY(0)';
-                e.target.style.boxShadow = 'none';
+                const target = e.target as HTMLDivElement;
+                target.style.background = '#2E7D32';
+                target.style.transform = 'translateY(0)';
+                target.style.boxShadow = 'none';
               }}
             >
               🔗 VIEW ON GITHUB
