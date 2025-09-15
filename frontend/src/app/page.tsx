@@ -202,7 +202,30 @@ export default function Home() {
 
         {/* Footer */}
         <div className="text-center" style={{ marginTop: '4rem', color: 'rgba(255,255,255,0.6)' }}>
-          <p>APCollector - Secure temporary file sharing</p>
+          <p>APCollector - Because im lazy to download from discord</p>
+          <p style={{ marginTop: '0.5rem' }}>
+            <a 
+              href="https://github.com/MuratDev41/apcollector" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              style={{ 
+                color: 'rgba(255,255,255,0.8)', 
+                textDecoration: 'none',
+                borderBottom: '1px solid rgba(255,255,255,0.3)',
+                transition: 'all 0.2s ease'
+              }}
+              onMouseEnter={(e) => {
+                e.target.style.color = 'white';
+                e.target.style.borderBottomColor = 'white';
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.color = 'rgba(255,255,255,0.8)';
+                e.target.style.borderBottomColor = 'rgba(255,255,255,0.3)';
+              }}
+            >
+              🔗 View on GitHub
+            </a>
+          </p>
         </div>
       </div>
     </div>
