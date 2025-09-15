@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useDropzone } from 'react-dropzone';
 import toast from 'react-hot-toast';
@@ -17,15 +17,64 @@ export default function RoomPage() {
   const [stats, setStats] = useState<RoomStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
-  const [isDownloading, setIsDownloading] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [timeLeft, setTimeLeft] = useState<string>('');
   const [isCreator, setIsCreator] = useState(false);
 
   // Load room data
+  const loadRoomData = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      
+      // Load room info
+      const roomData = await apiClient.getRoom(roomId);
+      setRoom(roomData);
+      
+      // Check if current user is the creator
+      const roomStats = await apiClient.getRoomStats(roomId);
+      setStats(roomStats);
+      setIsCreator(true);
+      
+      // Load submission status
+      const submissionData = await apiClient.getSubmission(roomId);
+      setHasSubmission(submissionData.hasSubmission);
+      setSubmission(submissionData.submission);
+      
+    } catch (error: unknown) {
+      console.error('Error loading room:', error);
+      const errorResponse = error as { response?: { status: number; data?: { error: string } } };
+      if (errorResponse.response?.status === 404) {
+        toast.error('Room not found');
+        router.push('/');
+      } else if (errorResponse.response?.status === 410) {
+        toast.error('Room has expired');
+        router.push('/');
+      } else if (errorResponse.response?.status === 403) {
+        // User is not the creator, load as participant
+        setIsCreator(false);
+        try {
+          const roomData = await apiClient.getRoom(roomId);
+          setRoom(roomData);
+          
+          const submissionData = await apiClient.getSubmission(roomId);
+          setHasSubmission(submissionData.hasSubmission);
+          setSubmission(submissionData.submission);
+        } catch {
+          toast.error('Failed to load room');
+          router.push('/');
+        }
+      } else {
+        toast.error('Failed to load room');
+        router.push('/');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, [roomId, router]);
+
   useEffect(() => {
     loadRoomData();
-  }, [roomId]);
+  }, [roomId, loadRoomData]);
 
   // Update countdown timer
   useEffect(() => {
@@ -53,54 +102,6 @@ export default function RoomPage() {
     return () => clearInterval(interval);
   }, [room]);
 
-  const loadRoomData = async () => {
-    try {
-      setIsLoading(true);
-      
-      // Load room info
-      const roomData = await apiClient.getRoom(roomId);
-      setRoom(roomData);
-      
-      // Check if current user is the creator
-      const roomStats = await apiClient.getRoomStats(roomId);
-      setStats(roomStats);
-      setIsCreator(true);
-      
-      // Load submission status
-      const submissionData = await apiClient.getSubmission(roomId);
-      setHasSubmission(submissionData.hasSubmission);
-      setSubmission(submissionData.submission);
-      
-    } catch (error: any) {
-      console.error('Error loading room:', error);
-      if (error.response?.status === 404) {
-        toast.error('Room not found');
-        router.push('/');
-      } else if (error.response?.status === 410) {
-        toast.error('Room has expired');
-        router.push('/');
-      } else if (error.response?.status === 403) {
-        // User is not the creator, load as participant
-        setIsCreator(false);
-        try {
-          const roomData = await apiClient.getRoom(roomId);
-          setRoom(roomData);
-          
-          const submissionData = await apiClient.getSubmission(roomId);
-          setHasSubmission(submissionData.hasSubmission);
-          setSubmission(submissionData.submission);
-        } catch (participantError) {
-          toast.error('Failed to load room');
-          router.push('/');
-        }
-      } else {
-        toast.error('Failed to load room');
-        router.push('/');
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const onDrop = async (acceptedFiles: File[]) => {
     if (acceptedFiles.length === 0) return;
@@ -121,9 +122,10 @@ export default function RoomPage() {
       toast.success('Files uploaded successfully!');
       await loadRoomData(); // Reload data
       
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Upload error:', error);
-      toast.error(error.response?.data?.error || 'Failed to upload files');
+      const errorResponse = error as { response?: { data?: { error: string } } };
+      toast.error(errorResponse.response?.data?.error || 'Failed to upload files');
     } finally {
       setIsUploading(false);
     }
@@ -136,15 +138,12 @@ export default function RoomPage() {
   });
 
   const handleDownload = async (fileType: 'yaml' | 'apworld') => {
-    setIsDownloading(true);
     try {
       await apiClient.downloadFiles(roomId, fileType);
       toast.success(`${fileType.toUpperCase()} files downloaded successfully!`);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Download error:', error);
       toast.error('Failed to download files');
-    } finally {
-      setIsDownloading(false);
     }
   };
 
@@ -164,9 +163,10 @@ export default function RoomPage() {
       await apiClient.cancelSubmission(roomId);
       toast.success('Submission cancelled successfully!');
       await loadRoomData(); // Reload data to update UI
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Cancel submission error:', error);
-      toast.error(error.response?.data?.error || 'Failed to cancel submission');
+      const errorResponse = error as { response?: { data?: { error: string } } };
+      toast.error(errorResponse.response?.data?.error || 'Failed to cancel submission');
     } finally {
       setIsCancelling(false);
     }
@@ -309,7 +309,7 @@ export default function RoomPage() {
               marginBottom: '1.5rem',
               textShadow: '1px 1px 0px #C62828'
             }}>
-              The room you're looking for doesn't exist or has expired.
+              The room you&apos;re looking for doesn&apos;t exist or has expired.
             </p>
             <div 
               style={{
