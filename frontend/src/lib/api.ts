@@ -90,6 +90,13 @@ export const apiClient = {
     window.URL.revokeObjectURL(url);
   },
 
+  removeFiles: async (roomId: string, fileNames: string[]): Promise<{ yamlFiles: string[]; apworldFiles: string[] }> => {
+    const response = await api.delete(`/rooms/${roomId}/submission/files`, {
+      data: { fileNames }
+    });
+    return response.data;
+  },
+
   cancelSubmission: async (roomId: string): Promise<void> => {
     const response = await api.delete(`/rooms/${roomId}/submission`);
     return response.data;

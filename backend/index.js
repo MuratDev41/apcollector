@@ -20,7 +20,17 @@ const initDatabase = async () => {
 };
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: [
+    'https://apcollector.xyz',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  optionsSuccessStatus: 200
+}));
 app.use(express.json());
 
 // Configure multer for file uploads
@@ -77,6 +87,30 @@ async function cleanupRoomFiles(roomId) {
   }
 }
 
+// Helper function to delete existing ZIP files for a room
+async function deleteExistingZipFiles(roomId) {
+  const yamlZipPath = path.join(__dirname, 'storage', 'temp', `${roomId}_yaml.zip`);
+  const apworldZipPath = path.join(__dirname, 'storage', 'temp', `${roomId}_apworld.zip`);
+  
+  if (fs.existsSync(yamlZipPath)) {
+    try {
+      fs.unlinkSync(yamlZipPath);
+      console.log(`Deleted existing YAML ZIP: ${roomId}_yaml.zip`);
+    } catch (error) {
+      console.error(`Error deleting YAML ZIP ${roomId}_yaml.zip:`, error);
+    }
+  }
+  
+  if (fs.existsSync(apworldZipPath)) {
+    try {
+      fs.unlinkSync(apworldZipPath);
+      console.log(`Deleted existing APWorld ZIP: ${roomId}_apworld.zip`);
+    } catch (error) {
+      console.error(`Error deleting APWorld ZIP ${roomId}_apworld.zip:`, error);
+    }
+  }
+}
+
 // Helper function to delete old files from a user's submission
 async function deleteOldFiles(roomId, oldYamlFiles, oldApworldFiles) {
   const roomDir = path.join(__dirname, 'storage', 'rooms', roomId);
@@ -107,6 +141,15 @@ async function deleteOldFiles(roomId, oldYamlFiles, oldApworldFiles) {
     }
   }
 }
+
+// Handle preflight requests
+app.options('*', (req, res) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.sendStatus(200);
+});
 
 // Routes
 
@@ -189,6 +232,75 @@ app.get('/api/rooms/:roomId/submission', async (req, res) => {
   }
 });
 
+// Remove specific files from user's submission
+app.delete('/api/rooms/:roomId/submission/files', async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const { fileNames } = req.body; // Array of file names to remove
+    const userIp = getClientIP(req);
+    
+    if (!fileNames || !Array.isArray(fileNames) || fileNames.length === 0) {
+      return res.status(400).json({ success: false, error: 'No file names provided' });
+    }
+    
+    // Verify room exists and is not expired
+    const room = await db.getRoom(roomId);
+    if (!room) {
+      return res.status(404).json({ success: false, error: 'Room not found' });
+    }
+    
+    if (new Date(room.expires_at) < new Date()) {
+      await cleanupRoomFiles(roomId);
+      await db.deleteRoom(roomId);
+      return res.status(410).json({ success: false, error: 'Room has expired' });
+    }
+    
+    // Get user's current submission
+    const submission = await db.getSubmission(roomId, userIp);
+    if (!submission) {
+      return res.status(404).json({ success: false, error: 'No submission found' });
+    }
+    
+    // Get current files
+    const currentYamlFiles = JSON.parse(submission.yaml_files || '[]');
+    const currentApworldFiles = JSON.parse(submission.apworld_files || '[]');
+    
+    // Filter out the files to remove
+    const updatedYamlFiles = currentYamlFiles.filter(fileName => !fileNames.includes(fileName));
+    const updatedApworldFiles = currentApworldFiles.filter(fileName => !fileNames.includes(fileName));
+    
+    // Delete the actual files from filesystem
+    const roomDir = path.join(__dirname, 'storage', 'rooms', roomId);
+    for (const fileName of fileNames) {
+      const filePath = path.join(roomDir, fileName);
+      if (fs.existsSync(filePath)) {
+        try {
+          fs.unlinkSync(filePath);
+          console.log(`Deleted file: ${fileName}`);
+        } catch (error) {
+          console.error(`Error deleting file ${fileName}:`, error);
+        }
+      }
+    }
+    
+    // Update the submission with remaining files
+    await db.updateSubmission(roomId, userIp, updatedYamlFiles, updatedApworldFiles);
+    
+    // Delete existing ZIP files since files were removed
+    await deleteExistingZipFiles(roomId);
+    
+    res.json({
+      success: true,
+      message: 'Files removed successfully',
+      yamlFiles: updatedYamlFiles,
+      apworldFiles: updatedApworldFiles
+    });
+  } catch (error) {
+    console.error('Error removing files:', error);
+    res.status(500).json({ success: false, error: 'Failed to remove files' });
+  }
+});
+
 // Cancel/delete user's submission
 app.delete('/api/rooms/:roomId/submission', async (req, res) => {
   try {
@@ -221,6 +333,9 @@ app.delete('/api/rooms/:roomId/submission', async (req, res) => {
     // Delete the submission from database
     await db.deleteSubmission(roomId, userIp);
     
+    // Delete existing ZIP files since submission was cancelled
+    await deleteExistingZipFiles(roomId);
+    
     res.json({
       success: true,
       message: 'Submission cancelled successfully'
@@ -236,9 +351,16 @@ app.post('/api/rooms/:roomId/upload', upload.fields([
   { name: 'yamlFiles', maxCount: 50 },
   { name: 'apworldFiles', maxCount: 50 }
 ]), async (req, res) => {
+  // Add CORS headers explicitly for this endpoint
+  res.header('Access-Control-Allow-Origin', req.headers.origin || 'https://apcollector.xyz');
+  res.header('Access-Control-Allow-Credentials', 'true');
   try {
     const { roomId } = req.params;
     const userIp = getClientIP(req);
+    
+    console.log(`Upload request received for room ${roomId} from IP ${userIp}`);
+    console.log('Request headers:', req.headers);
+    console.log('Files received:', req.files);
     
     // Verify room exists and is not expired
     const room = await db.getRoom(roomId);
@@ -278,19 +400,27 @@ app.post('/api/rooms/:roomId/upload', upload.fields([
     const yamlFilePaths = yamlFiles.map(file => file.filename);
     const apworldFilePaths = apworldFiles.map(file => file.filename);
     
+    // Delete existing ZIP files since new files are being added
+    await deleteExistingZipFiles(roomId);
+    
     // Check if user already has a submission
     const existingSubmission = await db.getSubmission(roomId, userIp);
     
     if (existingSubmission) {
-      // Get old file paths to delete them
-      const oldYamlFiles = JSON.parse(existingSubmission.yaml_files || '[]');
-      const oldApworldFiles = JSON.parse(existingSubmission.apworld_files || '[]');
+      // Get existing file paths and append new ones
+      const existingYamlFiles = JSON.parse(existingSubmission.yaml_files || '[]');
+      const existingApworldFiles = JSON.parse(existingSubmission.apworld_files || '[]');
       
-      // Delete old files before updating
-      await deleteOldFiles(roomId, oldYamlFiles, oldApworldFiles);
+      // Combine existing files with new files
+      const combinedYamlFiles = [...existingYamlFiles, ...yamlFilePaths];
+      const combinedApworldFiles = [...existingApworldFiles, ...apworldFilePaths];
       
-      // Update existing submission
-      await db.updateSubmission(roomId, userIp, yamlFilePaths, apworldFilePaths);
+      // Update existing submission with combined files
+      await db.updateSubmission(roomId, userIp, combinedYamlFiles, combinedApworldFiles);
+      
+      // Update response to show all files
+      yamlFilePaths.splice(0, yamlFilePaths.length, ...combinedYamlFiles);
+      apworldFilePaths.splice(0, apworldFilePaths.length, ...combinedApworldFiles);
     } else {
       // Create new submission
       await db.createSubmission(roomId, userIp, yamlFilePaths, apworldFilePaths);
@@ -298,7 +428,7 @@ app.post('/api/rooms/:roomId/upload', upload.fields([
     
     res.json({
       success: true,
-      message: 'Files uploaded successfully',
+      message: existingSubmission ? 'Files added to submission successfully' : 'Files uploaded successfully',
       yamlFiles: yamlFilePaths,
       apworldFiles: apworldFilePaths
     });
