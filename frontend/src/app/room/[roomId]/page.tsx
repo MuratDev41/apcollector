@@ -608,7 +608,7 @@ export default function RoomPage() {
                 
                 {/* Participant File List */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1.5rem', textAlign: 'left' }}>
-                  {submission.yamlFiles.map((file, idx) => (
+                  {submission?.yamlFiles.map((file, idx) => (
                     <div key={idx} style={{ background: '#1B5E20', padding: '0.75rem', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span style={{ color: 'white', wordBreak: 'break-all', fontSize: '0.85rem', fontFamily: 'monospace' }}>
                         {file.split('_').slice(1).join('_')}
@@ -619,7 +619,7 @@ export default function RoomPage() {
                       </div>
                     </div>
                   ))}
-                  {submission.apworldFiles.map((file, idx) => (
+                  {submission?.apworldFiles.map((file, idx) => (
                     <div key={idx} style={{ background: '#4A148C', padding: '0.75rem', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span style={{ color: 'white', wordBreak: 'break-all', fontSize: '0.85rem', fontFamily: 'monospace' }}>
                         {file.split('_').slice(1).join('_')}

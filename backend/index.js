@@ -27,7 +27,8 @@ app.use(cors({
   origin: [
     'https://apcollector.xyz',
     'http://localhost:3000',
-    'http://127.0.0.1:3000'
+    'http://127.0.0.1:3000',
+    'http://31.42.127.143:3000'
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
