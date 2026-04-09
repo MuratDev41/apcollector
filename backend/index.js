@@ -11,6 +11,9 @@ const Database = require('./database');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Global set to keep track of ZIP files currently being generated to prevent race conditions
+const activeZipGenerations = new Set();
+
 // Initialize database
 let db;
 const initDatabase = async () => {
@@ -28,7 +31,7 @@ app.use(cors({
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Participant-ID'],
   optionsSuccessStatus: 200
 }));
 app.use(express.json());
@@ -48,8 +51,9 @@ const storage = multer.diskStorage({
   },
   filename: function (req, file, cb) {
     const timestamp = Date.now();
-    const originalName = file.originalname;
-    cb(null, `${timestamp}_${originalName}`);
+    // Sanitize original name to prevent directory traversal
+    const safeName = path.basename(file.originalname);
+    cb(null, `${timestamp}_${safeName}`);
   }
 });
 
@@ -66,6 +70,11 @@ function getClientIP(req) {
          req.connection.remoteAddress || 
          req.socket.remoteAddress ||
          (req.connection.socket ? req.connection.socket.remoteAddress : null);
+}
+
+// Helper function to get participant ID
+function getParticipantID(req) {
+  return req.headers['x-participant-id'];
 }
 
 // Helper function to clean up room files
@@ -194,7 +203,8 @@ app.get('/api/rooms/:roomId', async (req, res) => {
       room: {
         id: room.id,
         createdAt: room.created_at,
-        expiresAt: room.expires_at
+        expiresAt: room.expires_at,
+        isCreator: room.creator_ip === getClientIP(req)
       }
     });
   } catch (error) {
@@ -203,18 +213,168 @@ app.get('/api/rooms/:roomId', async (req, res) => {
   }
 });
 
+// Get all uploaded files in the room (Restricted to Creator)
+app.get('/api/rooms/:roomId/files', async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    
+    // Verify room exists
+    const room = await db.getRoom(roomId);
+    if (!room) {
+      return res.status(404).json({ success: false, error: 'Room not found' });
+    }
+    
+    // SECURITY: Verify requester is the room creator
+    const userIp = getClientIP(req);
+    if (room.creator_ip !== userIp) {
+      return res.status(403).json({ success: false, error: 'Access denied: Only the room creator can view all files' });
+    }
+    
+    // Get all submissions for the room
+    const submissions = await db.getRoomSubmissions(roomId);
+    
+    let allYamlFiles = [];
+    let allApworldFiles = [];
+    
+    submissions.forEach(sub => {
+      const yamlFiles = JSON.parse(sub.yaml_files || '[]');
+      const apworldFiles = JSON.parse(sub.apworld_files || '[]');
+      
+      allYamlFiles = [...allYamlFiles, ...yamlFiles];
+      allApworldFiles = [...allApworldFiles, ...apworldFiles];
+    });
+    
+    res.json({
+      success: true,
+      yamlFiles: allYamlFiles,
+      apworldFiles: allApworldFiles
+    });
+  } catch (error) {
+    console.error('Error getting all files:', error);
+    res.status(500).json({ success: false, error: 'Failed to get all files' });
+  }
+});
+
+// Get or download a specific file (Restricted to Creator)
+app.get('/api/rooms/:roomId/file/:fileName', async (req, res) => {
+  try {
+    const { roomId, fileName } = req.params;
+    const { download } = req.query;
+    
+    // Verify room exists
+    const room = await db.getRoom(roomId);
+    if (!room) {
+      return res.status(404).json({ success: false, error: 'Room not found' });
+    }
+    
+    // Check if requester is creator or file owner
+    const userIp = getClientIP(req);
+    const participantId = req.headers['x-participant-id'];
+    let isOwner = false;
+    
+    if (participantId) {
+      const submission = await db.getSubmission(roomId, participantId);
+      if (submission) {
+        const yamlFiles = JSON.parse(submission.yaml_files || '[]');
+        const apworldFiles = JSON.parse(submission.apworld_files || '[]');
+        if (yamlFiles.includes(fileName) || apworldFiles.includes(fileName)) {
+          isOwner = true;
+        }
+      }
+    }
+    
+    // SECURITY: Verify requester is the room creator or file owner
+    if (room.creator_ip !== userIp && !isOwner) {
+      return res.status(403).json({ success: false, error: 'Access denied: You can only access your own files' });
+    }
+    
+    const filePath = path.join(__dirname, 'storage', 'rooms', roomId, fileName);
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ success: false, error: 'File not found' });
+    }
+    
+    if (download === 'true') {
+      return res.download(filePath, fileName);
+    } else {
+      return res.sendFile(filePath);
+    }
+    
+  } catch (error) {
+    console.error('Error getting file:', error);
+    res.status(500).json({ success: false, error: 'Failed to access file' });
+  }
+});
+
+// Update a specific file content (Restricted to Creator or file owner)
+app.put('/api/rooms/:roomId/file/:fileName', async (req, res) => {
+  try {
+    const { roomId, fileName } = req.params;
+    const { content } = req.body;
+    
+    if (typeof content !== 'string') {
+      return res.status(400).json({ success: false, error: 'File content must be provided' });
+    }
+    
+    // Verify room exists
+    const room = await db.getRoom(roomId);
+    if (!room) {
+      return res.status(404).json({ success: false, error: 'Room not found' });
+    }
+    
+    // Check if requester is creator or file owner
+    const userIp = getClientIP(req);
+    const participantId = req.headers['x-participant-id'];
+    let isOwner = false;
+    
+    if (participantId) {
+      const submission = await db.getSubmission(roomId, participantId);
+      if (submission) {
+        const yamlFiles = JSON.parse(submission.yaml_files || '[]');
+        // We only allow editing YAML files as APWorlds are binaries
+        if (yamlFiles.includes(fileName)) {
+          isOwner = true;
+        }
+      }
+    }
+    
+    // SECURITY: Verify requester is the room creator or file owner
+    if (room.creator_ip !== userIp && !isOwner) {
+      return res.status(403).json({ success: false, error: 'Access denied: You can only edit your own yaml files' });
+    }
+    
+    const filePath = path.join(__dirname, 'storage', 'rooms', roomId, fileName);
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ success: false, error: 'File not found on disk' });
+    }
+    
+    fs.writeFileSync(filePath, content, 'utf8');
+    
+    res.json({ success: true, message: 'File updated successfully' });
+    
+  } catch (error) {
+    console.error('Error updating file:', error);
+    res.status(500).json({ success: false, error: 'Failed to update file' });
+  }
+});
+
 // Get user's submission status
 app.get('/api/rooms/:roomId/submission', async (req, res) => {
   try {
     const { roomId } = req.params;
-    const userIp = getClientIP(req);
+    const participantId = getParticipantID(req);
+    
+    if (!participantId) {
+      return res.status(400).json({ success: false, error: 'Participant ID missing' });
+    }
     
     const room = await db.getRoom(roomId);
     if (!room) {
       return res.status(404).json({ success: false, error: 'Room not found' });
     }
     
-    const submission = await db.getSubmission(roomId, userIp);
+    const submission = await db.getSubmission(roomId, participantId);
     
     res.json({
       success: true,
@@ -237,7 +397,11 @@ app.delete('/api/rooms/:roomId/submission/files', async (req, res) => {
   try {
     const { roomId } = req.params;
     const { fileNames } = req.body; // Array of file names to remove
-    const userIp = getClientIP(req);
+    const participantId = getParticipantID(req);
+    
+    if (!participantId) {
+      return res.status(400).json({ success: false, error: 'Participant ID missing' });
+    }
     
     if (!fileNames || !Array.isArray(fileNames) || fileNames.length === 0) {
       return res.status(400).json({ success: false, error: 'No file names provided' });
@@ -256,7 +420,7 @@ app.delete('/api/rooms/:roomId/submission/files', async (req, res) => {
     }
     
     // Get user's current submission
-    const submission = await db.getSubmission(roomId, userIp);
+    const submission = await db.getSubmission(roomId, participantId);
     if (!submission) {
       return res.status(404).json({ success: false, error: 'No submission found' });
     }
@@ -284,7 +448,7 @@ app.delete('/api/rooms/:roomId/submission/files', async (req, res) => {
     }
     
     // Update the submission with remaining files
-    await db.updateSubmission(roomId, userIp, updatedYamlFiles, updatedApworldFiles);
+    await db.updateSubmission(roomId, participantId, updatedYamlFiles, updatedApworldFiles);
     
     // Delete existing ZIP files since files were removed
     await deleteExistingZipFiles(roomId);
@@ -305,7 +469,11 @@ app.delete('/api/rooms/:roomId/submission/files', async (req, res) => {
 app.delete('/api/rooms/:roomId/submission', async (req, res) => {
   try {
     const { roomId } = req.params;
-    const userIp = getClientIP(req);
+    const participantId = getParticipantID(req);
+    
+    if (!participantId) {
+      return res.status(400).json({ success: false, error: "Participant ID missing" });
+    }
     
     // Verify room exists and is not expired
     const room = await db.getRoom(roomId);
@@ -320,7 +488,7 @@ app.delete('/api/rooms/:roomId/submission', async (req, res) => {
     }
     
     // Get user's current submission
-    const submission = await db.getSubmission(roomId, userIp);
+    const submission = await db.getSubmission(roomId, participantId);
     if (!submission) {
       return res.status(404).json({ success: false, error: 'No submission found' });
     }
@@ -331,7 +499,7 @@ app.delete('/api/rooms/:roomId/submission', async (req, res) => {
     await deleteOldFiles(roomId, yamlFiles, apworldFiles);
     
     // Delete the submission from database
-    await db.deleteSubmission(roomId, userIp);
+    await db.deleteSubmission(roomId, participantId);
     
     // Delete existing ZIP files since submission was cancelled
     await deleteExistingZipFiles(roomId);
@@ -357,8 +525,13 @@ app.post('/api/rooms/:roomId/upload', upload.fields([
   try {
     const { roomId } = req.params;
     const userIp = getClientIP(req);
+    const participantId = getParticipantID(req);
     
-    console.log(`Upload request received for room ${roomId} from IP ${userIp}`);
+    if (!participantId) {
+      return res.status(400).json({ success: false, error: 'Participant ID missing' });
+    }
+    
+    console.log(`Upload request received for room ${roomId} from IP ${userIp}, Participant ${participantId}`);
     console.log('Request headers:', req.headers);
     console.log('Files received:', req.files);
     
@@ -404,26 +577,24 @@ app.post('/api/rooms/:roomId/upload', upload.fields([
     await deleteExistingZipFiles(roomId);
     
     // Check if user already has a submission
-    const existingSubmission = await db.getSubmission(roomId, userIp);
+    const existingSubmission = await db.getSubmission(roomId, participantId);
     
     if (existingSubmission) {
-      // Get existing file paths and append new ones
+      // Get existing file paths and combine with new ones (APPEND logic)
       const existingYamlFiles = JSON.parse(existingSubmission.yaml_files || '[]');
       const existingApworldFiles = JSON.parse(existingSubmission.apworld_files || '[]');
       
-      // Combine existing files with new files
       const combinedYamlFiles = [...existingYamlFiles, ...yamlFilePaths];
       const combinedApworldFiles = [...existingApworldFiles, ...apworldFilePaths];
       
-      // Update existing submission with combined files
-      await db.updateSubmission(roomId, userIp, combinedYamlFiles, combinedApworldFiles);
+      await db.updateSubmission(roomId, participantId, combinedYamlFiles, combinedApworldFiles);
       
       // Update response to show all files
       yamlFilePaths.splice(0, yamlFilePaths.length, ...combinedYamlFiles);
       apworldFilePaths.splice(0, apworldFilePaths.length, ...combinedApworldFiles);
     } else {
       // Create new submission
-      await db.createSubmission(roomId, userIp, yamlFilePaths, apworldFilePaths);
+      await db.createSubmission(roomId, participantId, userIp, yamlFilePaths, apworldFilePaths);
     }
     
     res.json({
@@ -453,6 +624,12 @@ app.get('/api/rooms/:roomId/download/:fileType', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Room not found' });
     }
     
+    // SECURITY: Verify requester is the room creator
+    const userIp = getClientIP(req);
+    if (room.creator_ip !== userIp) {
+      return res.status(403).json({ success: false, error: 'Access denied: Only the room creator can download files' });
+    }
+    
     // Get all submissions for the room
     const submissions = await db.getRoomSubmissions(roomId);
     
@@ -469,15 +646,29 @@ app.get('/api/rooms/:roomId/download/:fileType', async (req, res) => {
       return res.download(zipPath, zipFileName);
     }
     
-    const output = fs.createWriteStream(zipPath);
+    // Concurrency Protection: Avoid generating the same ZIP multiple times simultaneously
+    if (activeZipGenerations.has(zipPath)) {
+      return res.status(202).json({ success: true, message: 'Archive is being generated, please try again in a moment' });
+    }
+    
+    activeZipGenerations.add(zipPath);
+    
+    // Create ZIP in a temporary location first
+    const tempZipPath = `${zipPath}.tmp_${Date.now()}`;
+    const output = fs.createWriteStream(tempZipPath);
     const archive = archiver('zip', { zlib: { level: 9 } });
     
     output.on('close', () => {
+      // Atomic rename to original path
+      fs.renameSync(tempZipPath, zipPath);
+      activeZipGenerations.delete(zipPath);
       res.download(zipPath, zipFileName);
     });
     
     archive.on('error', (err) => {
       console.error('Archive error:', err);
+      if (fs.existsSync(tempZipPath)) fs.unlinkSync(tempZipPath);
+      activeZipGenerations.delete(zipPath);
       res.status(500).json({ success: false, error: 'Failed to create archive' });
     });
     
@@ -589,10 +780,13 @@ const startServer = async () => {
 startServer();
 
 // Graceful shutdown
-process.on('SIGINT', () => {
+const shutdown = () => {
   console.log('Shutting down server...');
   if (db) {
     db.close();
   }
   process.exit(0);
-});
+};
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

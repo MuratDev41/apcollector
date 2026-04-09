@@ -4,7 +4,11 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useDropzone } from 'react-dropzone';
 import toast from 'react-hot-toast';
-import apiClient, { Room, Submission, RoomStats } from '@/lib/api';
+import apiClient, { Room, Submission, RoomStats, AllFilesResponse } from '@/lib/api';
+import Editor from 'react-simple-code-editor';
+import Prism from 'prismjs';
+import 'prismjs/components/prism-yaml';
+import 'prismjs/themes/prism-tomorrow.css';
 
 export default function RoomPage() {
   const params = useParams();
@@ -20,6 +24,11 @@ export default function RoomPage() {
   const [isCancelling, setIsCancelling] = useState(false);
   const [timeLeft, setTimeLeft] = useState<string>('');
   const [isCreator, setIsCreator] = useState(false);
+  const [allFiles, setAllFiles] = useState<AllFilesResponse | null>(null);
+  const [editorFile, setEditorFile] = useState<{ name: string; content: string } | null>(null);
+  const [editorContent, setEditorContent] = useState<string>('');
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Load room data
   const loadRoomData = useCallback(async () => {
@@ -39,6 +48,14 @@ export default function RoomPage() {
       const submissionData = await apiClient.getSubmission(roomId);
       setHasSubmission(submissionData.hasSubmission);
       setSubmission(submissionData.submission);
+      
+      // Load all files if creator
+      try {
+        const filesData = await apiClient.getAllFiles(roomId);
+        setAllFiles(filesData);
+      } catch (e) {
+        console.error('Failed to load all files', e);
+      }
       
     } catch (error: unknown) {
       console.error('Error loading room:', error);
@@ -144,6 +161,43 @@ export default function RoomPage() {
     } catch (error: unknown) {
       console.error('Download error:', error);
       toast.error('Failed to download files');
+    }
+  };
+
+  const handleIndividualDownload = async (fileName: string) => {
+    try {
+      await apiClient.downloadIndividualFile(roomId, fileName);
+      toast.success(`${fileName} downloaded!`);
+    } catch (error: unknown) {
+      console.error('Download individual file error:', error);
+      toast.error(`Failed to download ${fileName}`);
+    }
+  };
+
+  const handleViewFile = async (fileName: string) => {
+    try {
+      const content = await apiClient.getFileContent(roomId, fileName);
+      setEditorFile({ name: fileName, content });
+      setEditorContent(content);
+      setIsEditorOpen(true);
+    } catch (error: unknown) {
+      console.error('View file error:', error);
+      toast.error(`Failed to view ${fileName}`);
+    }
+  };
+
+  const handleSaveFile = async () => {
+    if (!editorFile) return;
+    try {
+      setIsSaving(true);
+      await apiClient.updateFileContent(roomId, editorFile.name, editorContent);
+      toast.success('File saved successfully!');
+      setEditorFile({ ...editorFile, content: editorContent });
+    } catch (error: unknown) {
+      console.error('Save file error:', error);
+      toast.error('Failed to save file changes');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -549,8 +603,32 @@ export default function RoomPage() {
                   marginBottom: '1rem',
                   textShadow: '1px 1px 0px #1B5E20'
                 }}>
-                  Uploading new files will replace your previous submission.
+                  Uploading new files will add to your previous submission.
                 </p>
+                
+                {/* Participant File List */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1.5rem', textAlign: 'left' }}>
+                  {submission.yamlFiles.map((file, idx) => (
+                    <div key={idx} style={{ background: '#1B5E20', padding: '0.75rem', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: 'white', wordBreak: 'break-all', fontSize: '0.85rem', fontFamily: 'monospace' }}>
+                        {file.split('_').slice(1).join('_')}
+                      </span>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button onClick={() => handleViewFile(file)} title="View/Edit" style={{ background: '#10b981', color: 'white', padding: '0.4rem', borderRadius: '4px', border: 'none', cursor: 'pointer', fontSize: '0.9rem', boxShadow: '0 2px 0 #059669' }}>👁️ / ✏️</button>
+                        <button onClick={() => handleIndividualDownload(file)} title="Download" style={{ background: '#3b82f6', color: 'white', padding: '0.4rem', borderRadius: '4px', border: 'none', cursor: 'pointer', fontSize: '0.9rem', boxShadow: '0 2px 0 #1d4ed8' }}>⬇️</button>
+                      </div>
+                    </div>
+                  ))}
+                  {submission.apworldFiles.map((file, idx) => (
+                    <div key={idx} style={{ background: '#4A148C', padding: '0.75rem', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: 'white', wordBreak: 'break-all', fontSize: '0.85rem', fontFamily: 'monospace' }}>
+                        {file.split('_').slice(1).join('_')}
+                      </span>
+                      <button onClick={() => handleIndividualDownload(file)} title="Download" style={{ background: '#8b5cf6', color: 'white', padding: '0.4rem', borderRadius: '4px', border: 'none', cursor: 'pointer', fontSize: '0.9rem', boxShadow: '0 2px 0 #6d28d9' }}>⬇️</button>
+                    </div>
+                  ))}
+                </div>
+
                 <div 
                   onClick={handleCancelSubmission}
                   style={{
@@ -1108,7 +1186,186 @@ export default function RoomPage() {
             </div>
           </div>
         </div>
+        
+        {/* Creator Dashboard Section */}
+        {isCreator && allFiles && (
+          <div style={{ 
+            marginTop: '3rem', 
+            maxWidth: '1200px', 
+            margin: '3rem auto 0', 
+            display: 'flex', 
+            flexDirection: 'column', 
+            gap: '2rem' 
+          }}>
+            <h2 style={{ 
+              fontSize: '2rem', 
+              color: 'white', 
+              textShadow: '2px 2px 0 #1e40af', 
+              textAlign: 'center', 
+              fontFamily: 'monospace' 
+            }}>
+              👑 CREATOR DASHBOARD
+            </h2>
+            <div style={{ 
+              background: '#1e3a8a', 
+              padding: '2rem', 
+              borderRadius: '20px', 
+              border: '4px solid #1e40af', 
+              boxShadow: '0 8px 0 #172554' 
+            }}>
+              <h3 style={{ color: 'white', marginBottom: '1rem', borderBottom: '2px solid #3b82f6', paddingBottom: '0.5rem', fontFamily: 'monospace' }}>
+                YAML Files ({allFiles.yamlFiles.length})
+              </h3>
+              {allFiles.yamlFiles.length === 0 ? (
+                <p style={{ color: '#93c5fd' }}>No YAML files uploaded yet.</p>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' }}>
+                  {allFiles.yamlFiles.map((file, idx) => (
+                    <div key={idx} style={{ 
+                      background: '#2563eb', 
+                      padding: '1rem', 
+                      borderRadius: '10px', 
+                      display: 'flex', 
+                      justifyContent: 'space-between', 
+                      alignItems: 'center',
+                      border: '2px solid #1d4ed8'
+                    }}>
+                      <span style={{ color: 'white', wordBreak: 'break-all', fontSize: '0.9rem', fontFamily: 'monospace' }}>
+                        {file.split('_').slice(1).join('_')}
+                      </span>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button 
+                          onClick={() => handleViewFile(file)} 
+                          title="View File"
+                          style={{ background: '#10b981', color: 'white', padding: '0.5rem', borderRadius: '5px', border: 'none', cursor: 'pointer', boxShadow: '0 2px 0 #059669' }}>
+                          👁️
+                        </button>
+                        <button 
+                          onClick={() => handleIndividualDownload(file)} 
+                          title="Download File"
+                          style={{ background: '#3b82f6', color: 'white', padding: '0.5rem', borderRadius: '5px', border: 'none', cursor: 'pointer', boxShadow: '0 2px 0 #1d4ed8' }}>
+                          ⬇️
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              
+              <h3 style={{ color: 'white', marginBottom: '1rem', marginTop: '2rem', borderBottom: '2px solid #8b5cf6', paddingBottom: '0.5rem', fontFamily: 'monospace' }}>
+                APWorld Files ({allFiles.apworldFiles.length})
+              </h3>
+              {allFiles.apworldFiles.length === 0 ? (
+                <p style={{ color: '#c4b5fd' }}>No APWorld files uploaded yet.</p>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' }}>
+                  {allFiles.apworldFiles.map((file, idx) => (
+                    <div key={idx} style={{ 
+                      background: '#8b5cf6', 
+                      padding: '1rem', 
+                      borderRadius: '10px', 
+                      display: 'flex', 
+                      justifyContent: 'space-between', 
+                      alignItems: 'center',
+                      border: '2px solid #6d28d9'
+                    }}>
+                      <span style={{ color: 'white', wordBreak: 'break-all', fontSize: '0.9rem', fontFamily: 'monospace' }}>
+                        {file.split('_').slice(1).join('_')}
+                      </span>
+                      <button 
+                        onClick={() => handleIndividualDownload(file)} 
+                        title="Download File"
+                        style={{ background: '#6d28d9', color: 'white', padding: '0.5rem', borderRadius: '5px', border: 'none', cursor: 'pointer', boxShadow: '0 2px 0 #4c1d95' }}>
+                        ⬇️
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Text Editor Modal */}
+      {isEditorOpen && editorFile && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.85)', zIndex: 9999, display: 'flex',
+          justifyContent: 'center', alignItems: 'center', padding: '2rem'
+        }}>
+          <div style={{ 
+            background: '#1e1e1e', 
+            borderRadius: '12px', 
+            width: '100%', 
+            maxWidth: '900px', 
+            height: '85%', 
+            display: 'flex', 
+            flexDirection: 'column', 
+            border: '2px solid #333',
+            boxShadow: '0 10px 25px rgba(0,0,0,0.5)'
+          }}>
+            <div style={{ padding: '1rem', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#2d2d2d', borderTopLeftRadius: '10px', borderTopRightRadius: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                <span style={{ fontSize: '1.5rem' }}>📄</span>
+                <h3 style={{ color: 'white', margin: 0, fontFamily: 'monospace' }}>
+                  {editorFile.name.split('_').slice(1).join('_')}
+                </h3>
+              </div>
+              <div style={{ display: 'flex', gap: '1rem' }}>
+                <button 
+                  onClick={handleSaveFile}
+                  disabled={isSaving}
+                  style={{ 
+                    background: isSaving ? '#666' : '#10b981', 
+                    color: 'white', 
+                    border: 'none', 
+                    padding: '0.5rem 1.5rem', 
+                    borderRadius: '6px', 
+                    cursor: isSaving ? 'not-allowed' : 'pointer', 
+                    fontWeight: 'bold', 
+                    fontFamily: 'monospace', 
+                    boxShadow: isSaving ? 'none' : '0 2px 0 #059669',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem'
+                  }}
+                  onMouseOver={(e) => { if (!isSaving) e.currentTarget.style.transform = 'translateY(-2px)' }}
+                  onMouseOut={(e) => { if (!isSaving) e.currentTarget.style.transform = 'translateY(0)' }}
+                >
+                  {isSaving ? '⏳ SAVING...' : '💾 SAVE CHANGES'}
+                </button>
+                <button 
+                  onClick={() => setIsEditorOpen(false)} 
+                  style={{ background: '#ef4444', color: 'white', border: 'none', padding: '0.5rem 1.5rem', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontFamily: 'monospace', boxShadow: '0 2px 0 #b91c1c' }}
+                  onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-2px)'}
+                  onMouseOut={(e) => e.currentTarget.style.transform = 'translateY(0)'}
+                >
+                  CLOSE
+                </button>
+              </div>
+            </div>
+            <div style={{ flex: 1, overflow: 'auto', padding: '1rem', backgroundColor: '#1e1e1e' }}>
+              <div style={{ minHeight: '100%', border: '1px solid #333', borderRadius: '4px' }}>
+                <Editor
+                  value={editorContent}
+                  onValueChange={setEditorContent}
+                  highlight={code => Prism.highlight(code, Prism.languages.yaml, 'yaml')}
+                  padding={15}
+                  style={{
+                    fontFamily: '"Fira code", "Fira Mono", monospace',
+                    fontSize: 14,
+                    backgroundColor: '#1e1e1e',
+                    color: '#e5e5e5',
+                    minHeight: '100%',
+                    outline: 'none'
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

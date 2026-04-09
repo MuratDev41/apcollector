@@ -27,6 +27,7 @@ class Database {
           CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             room_id TEXT,
+            participant_id TEXT,
             user_ip TEXT,
             yaml_files TEXT, -- JSON array of file paths
             apworld_files TEXT, -- JSON array of file paths
@@ -40,25 +41,37 @@ class Database {
             return;
           }
           
-          // Create indexes for better performance
-          this.db.run(`CREATE INDEX IF NOT EXISTS idx_rooms_expires_at ON rooms(expires_at)`, (err) => {
-            if (err) {
-              reject(err);
-              return;
-            }
+          // Migration: Add participant_id column if it doesn't exist
+          this.db.run(`ALTER TABLE submissions ADD COLUMN participant_id TEXT`, (err) => {
+            // Ignore error if column already exists (SQLite doesn't have IF NOT EXISTS for ADD COLUMN)
             
-            this.db.run(`CREATE INDEX IF NOT EXISTS idx_submissions_room_id ON submissions(room_id)`, (err) => {
+            // Create indexes for better performance
+            this.db.run(`CREATE INDEX IF NOT EXISTS idx_rooms_expires_at ON rooms(expires_at)`, (err) => {
               if (err) {
                 reject(err);
                 return;
               }
               
-              this.db.run(`CREATE INDEX IF NOT EXISTS idx_submissions_user_ip ON submissions(user_ip)`, (err) => {
+              this.db.run(`CREATE INDEX IF NOT EXISTS idx_submissions_room_id ON submissions(room_id)`, (err) => {
                 if (err) {
                   reject(err);
                   return;
                 }
-                resolve();
+                
+                this.db.run(`CREATE INDEX IF NOT EXISTS idx_submissions_user_ip ON submissions(user_ip)`, (err) => {
+                  if (err) {
+                    reject(err);
+                    return;
+                  }
+                  
+                  this.db.run(`CREATE INDEX IF NOT EXISTS idx_submissions_participant_id ON submissions(participant_id)`, (err) => {
+                    if (err) {
+                      reject(err);
+                      return;
+                    }
+                    resolve();
+                  });
+                });
               });
             });
           });
@@ -109,11 +122,11 @@ class Database {
   }
 
   // Submission operations
-  getSubmission(roomId, userIp) {
+  getSubmission(roomId, participantId) {
     return new Promise((resolve, reject) => {
       this.db.get(
-        'SELECT * FROM submissions WHERE room_id = ? AND user_ip = ?',
-        [roomId, userIp],
+        'SELECT * FROM submissions WHERE room_id = ? AND participant_id = ?',
+        [roomId, participantId],
         (err, row) => {
           if (err) reject(err);
           else resolve(row);
@@ -122,11 +135,11 @@ class Database {
     });
   }
 
-  createSubmission(roomId, userIp, yamlFiles = [], apworldFiles = []) {
+  createSubmission(roomId, participantId, userIp, yamlFiles = [], apworldFiles = []) {
     return new Promise((resolve, reject) => {
       this.db.run(
-        'INSERT INTO submissions (room_id, user_ip, yaml_files, apworld_files) VALUES (?, ?, ?, ?)',
-        [roomId, userIp, JSON.stringify(yamlFiles), JSON.stringify(apworldFiles)],
+        'INSERT INTO submissions (room_id, participant_id, user_ip, yaml_files, apworld_files) VALUES (?, ?, ?, ?, ?)',
+        [roomId, participantId, userIp, JSON.stringify(yamlFiles), JSON.stringify(apworldFiles)],
         function(err) {
           if (err) reject(err);
           else resolve(this.lastID);
@@ -135,11 +148,11 @@ class Database {
     });
   }
 
-  updateSubmission(roomId, userIp, yamlFiles = [], apworldFiles = []) {
+  updateSubmission(roomId, participantId, yamlFiles = [], apworldFiles = []) {
     return new Promise((resolve, reject) => {
       this.db.run(
-        'UPDATE submissions SET yaml_files = ?, apworld_files = ?, updated_at = CURRENT_TIMESTAMP WHERE room_id = ? AND user_ip = ?',
-        [JSON.stringify(yamlFiles), JSON.stringify(apworldFiles), roomId, userIp],
+        'UPDATE submissions SET yaml_files = ?, apworld_files = ?, updated_at = CURRENT_TIMESTAMP WHERE room_id = ? AND participant_id = ?',
+        [JSON.stringify(yamlFiles), JSON.stringify(apworldFiles), roomId, participantId],
         function(err) {
           if (err) reject(err);
           else resolve(this.changes);
@@ -174,11 +187,11 @@ class Database {
     });
   }
 
-  deleteSubmission(roomId, userIp) {
+  deleteSubmission(roomId, participantId) {
     return new Promise((resolve, reject) => {
       this.db.run(
-        'DELETE FROM submissions WHERE room_id = ? AND user_ip = ?',
-        [roomId, userIp],
+        'DELETE FROM submissions WHERE room_id = ? AND participant_id = ?',
+        [roomId, participantId],
         function(err) {
           if (err) reject(err);
           else resolve(this.changes);
